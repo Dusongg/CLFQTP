@@ -153,7 +153,34 @@ namespace DusongPool {
         // may be called asynchronously to not pause the calling thread while waiting
         // if isWait == true, all the functions in the queue are run, otherwise the queue is cleared without running the functions
         void stop(bool is_wait = false) {
-            
+            //不用将队列里的任务执行完就直接stop
+            if (!is_wait) {
+                if (this->is_stop) return;
+                this->is_stop = true;
+                for (int i = 0, n = this->size(); i < n; i++) {
+                    *this->flags[i] = true;
+                }
+                this->clear_queue();
+            } else {  //执行队列任务
+                if (this->is_done || this->is_stop) { return; }
+                this->is_done = true;
+            }
+            {
+                std::unique_lock<std::mutex> lock(this->mutex);
+                this->cond_v.notify_all();
+            }
+            for (int i = 0; i < static_cast<int>(this->threads.size()); i++) {
+                if (this->threads[i]->joinable()) {
+                    this->threads[i]->join();
+                }
+            }
+
+            // if there were no threads in the pool but some functors in the queue, the functors are not deleted by the threads
+            // therefore delete them here
+            this->clear_queue();
+
+            this->threads.clear();   //释放所有线程资源
+            this->flags.clear();   //析构所有
         }
 
         //清空队列里的所有任务
@@ -173,7 +200,7 @@ namespace DusongPool {
             std::shared_ptr<std::atomic<bool>> flag(this->flags[id]);
 
             this->threads[id].reset(new std::thread([this, id, flag /*值传递*/]() {
-                std::atomic<bool>& _flag = *flag;   //可省略？
+                std::atomic<bool>& _flag = *flag;   
                 std::function<void(int)>* task;
                 bool is_pop = this->lock_free_queue.pop(task);
 
@@ -192,7 +219,7 @@ namespace DusongPool {
                         return is_pop || this->is_done || _flag;   //唤醒线程当且仅当:取出任务/线程执行完毕/第id个线程被暂停
                     });
                     this->n_waiting--;
-                    if (!is_pop) return;  //线程执行完毕/第id个线程被暂停，此时线程结束运行，return
+                    if (!is_pop) return;  //线程执行完毕/第id个线程被暂停，此时线程结束运行，return   <-  调用this->stop()
                 }
             }
             ));
