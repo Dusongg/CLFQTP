@@ -9,6 +9,8 @@
 #include <condition_variable>
 #include <functional>
 
+#include <future>
+
 namespace DusongPool {
     template<typename T>
     class LockFreeQueue {
@@ -178,9 +180,40 @@ namespace DusongPool {
             // if there were no threads in the pool but some functors in the queue, the functors are not deleted by the threads
             // therefore delete them here
             this->clear_queue();
-
             this->threads.clear();   //释放所有线程资源
             this->flags.clear();   //析构所有
+        }
+
+        template<typename F, class... Args>
+        auto push(F&& f, Args... args) -> std::future<decltype(f(args...))> {
+            //packaged_task用法类似function
+            auto package = std::shared_ptr<packaged_task<decltype<f(args...)>(int)>>(
+                std::bind(std::forward<F>(f), std::placeholders::_1, args...)
+            );
+            //线程执行时，将id作为参数传入
+            auto task = new function<void(int)>([package](int id) {
+                (*package)(id);
+            });
+            this->lock_free_queue.push(task);
+            std::unique_lock<std::mutex> lock(this->mutex);
+            this->cond_v.notify_one();
+            return package->get_future();
+        }
+
+        template<typename F>
+        auto push(F&& f) -> std::future<decltype(f())> {   
+            //packaged_task用法类似function
+            auto package = std::shared_ptr<packaged_task<decltype<f()>(int)>>(
+                std::bind(std::forward<F>(f), std::placeholders::_1);
+            );
+            //线程执行时，将id作为参数传入
+            auto task = new function<void(int)>([package](int id) {
+                (*package)(id);
+            });
+            this->lock_free_queue.push(task);
+            std::unique_lock<std::mutex> lock(this->mutex);
+            this->cond_v.notify_one();
+            return package->get_future();
         }
 
         //清空队列里的所有任务
